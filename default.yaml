@@ -1,0 +1,340 @@
+# configs/default.yaml
+#
+# Explicit YAML form of every Cfg() default. Two purposes:
+#   1. As documentation: every knob the codebase exposes, in one place.
+#   2. As a starting point: copy this file, edit values, pass via --config.
+#
+# Loaded by:        Cfg.from_yaml(path)
+# Equivalent code:  Cfg()   (i.e. omitting --config gives the same result)
+#
+# Override partially: only include the fields you want to change.
+# Unspecified fields keep their built-in defaults.
+#
+# All paths under data.* are relative to data.repo_root. The repo_root
+# itself defaults to the current working directory at run time.
+#
+# Camera-ready note: every paper-faithful default in this file is also
+# verified by the Cfg dataclass validators in src/configs.py. If you
+# change a value here, the validator may reject it on load — that's
+# intentional. The reference values come from:
+#
+#   - FineDiving dataset protocol:      Xu et al., CVPR 2022 + IJCV 2024
+#   - EDGE motion diffusion:            Tseng et al., CVPR 2023 (codebase)
+#   - FineDiving-HF expert annotations: this paper's dataset section
+
+run_name: default
+seed: 0
+
+# =============================================================================
+# data
+# =============================================================================
+data:
+  # Paths (all relative to repo_root).
+  repo_root: .
+  finediving_anno_root: data/annotations/finediving
+  finediving_frames_root: data/frames/finediving
+  pose_root: data/poses
+  faults_root: data/faults
+  faults_file: finediving_hf.json
+  # Optional dataset variants. Set only if you have these annotation files.
+  finediving_plus_anno_root: data/annotations/finediving_plus
+  mtl_aqa_anno_root: data/annotations/mtl_aqa
+  pose_failed_list: data/poses/failed.txt
+
+
+  # Frame file pattern. FineDiving uses 1-indexed 5-digit zero-padded
+  # JPEGs (00001.jpg, 00002.jpg, ...) per dive directory.
+  frame_filename_pattern: "{:05d}.jpg"
+
+  # Sequence layout — matches Xu et al., CVPR 2022 §4.1 + IJCV 2024 §4.
+  num_frames: 96                     # = (num_snippets - 1) * snippet_stride + snippet_len
+  num_snippets: 9
+  snippet_len: 16
+  snippet_stride: 10
+
+  # Image preprocessing.
+  image_resize_hw: [200, 112]        # (height, width) — preserves aspect ratio
+  image_size: 112                    # final square crop
+  image_mean: [0.485, 0.456, 0.406]
+  image_std:  [0.229, 0.224, 0.225]
+  frame_index_jitter: 0              # set >0 only during AQA training
+
+  # Procedure segmentation supervision (3 sub-actions → 2 transitions).
+  num_step_transitions: 2            # L in the paper
+  frames_per_step: 5                 # T_l (fix_size in the FineDiving reference)
+  num_steps: 3                       # L + 1
+
+  # Pose sampling (HybrIK output convention).
+  pose_fps: 30
+  pose_joint_count: 24               # SMPL
+  pose_rotation_dim: 3               # axis-angle input; converted to 6D in tokenize_pose
+  pose_root_dim: 3
+
+  # Splits.
+  val_fraction_of_train: 0.10
+  val_split_seed: 0
+  val_stratify_by_action_type: true
+
+  # Score range.
+  score_min: 0.0
+  score_max: 114.85                  # FineDiving+ maximum recorded score (IJCV §4)
+
+  # Judges' panel.
+  num_judges: 7                      # FINA standard
+  judge_trim_top_bottom: 1
+  require_judges_scores: false
+
+  # Exemplar selection (for contrastive scoring at training + inference).
+  exemplar_strategy: action_type     # action_type | difficulty | random
+  exemplar_voting_M: 10              # inference; training uses 1
+  exemplar_difficulty_window: 0.2
+  exemplar_fallback: difficulty      # difficulty | random | raise
+
+  # DataLoader.
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
+
+# =============================================================================
+# aqa  (TSA / STSA scorer)
+# =============================================================================
+aqa:
+  i3d_pretrained: data/i3d/i3d_kinetics_rgb.pt
+  i3d_feature_dim: 1024
+
+  # Procedure segmentation network (PSNet) channel / temporal ladder.
+  # The defaults reproduce the FineDiving release exactly; toggling
+  # use_reference_psnet=false swaps in the upsample-variant we kept for
+  # an ablation row.
+  segmentation_spatial_dims:  [1024, 512, 256, 128]
+  segmentation_temporal_dims: [12, 24, 48, 96]
+  segmentation_use_reference_psnet: true
+
+  # Procedure-aware decoder.
+  decoder_layers: 3
+  decoder_heads: 8
+  decoder_dim_ff: 2048
+  decoder_dropout: 0.1
+
+  # b2 contrastive head activation. The reference STSA repo (Xu IJCV'24)
+  # uses ReLU; we keep that as the default. gelu is available for ablation.
+  b2_activation: relu                # relu | gelu
+
+  # Regressor MLP.
+  regressor_hidden: [256, 128]
+  regressor_dropout: 0.1
+
+  # Loss weights for J = α_bce · Σ BCE(step probs) + α_mse · MSE(score).
+  bce_weight: 1.0
+  mse_weight: 1.0
+
+  # Optional auxiliary STSA KL term (off by default; on enables IJCV'24 §4.2).
+  sma_kl_weight: 1.0
+  sma_kl_aggregation: mean           # mean | sum — "sum" matches STSA Eq. 6 literally
+
+  # Symmetric (union-batch) training. Matches FineDiving helper.py:36-39
+  # which adds the exemplar-as-query branch.
+  use_symmetric_training: true
+
+  # Step-transition curriculum. Up to this epoch, training feeds the model
+  # ground-truth step transitions; after, predicted transitions. Matches
+  # FineDiving helper.py:145-164.
+  curriculum_threshold_epochs: 50
+
+  # Inference: exemplar-voting M and frozen()-mode safety.
+  freeze_after_training: true
+  calibration_mae_max: 0.25          # validator: reject ckpts whose calibrated MAE drift exceeds this
+
+# =============================================================================
+# diffusion  (EDGE-style pose motion prior)
+# =============================================================================
+diffusion:
+  # Sequence dimensions. Diving clips are short (~5 s @ 30 fps).
+  seq_seconds: 5.0
+  seq_fps: 30
+  seq_frames: 150
+
+  # Pose tokenisation.
+  pose_repr_dim: 147                 # 24 joints × 6D rot + 3 root
+  contact_dim: 4                     # heel/toe per foot
+  token_dim: 151                     # 4 + 144 + 3
+
+  # Transformer backbone.
+  width: 512
+  depth: 8
+  heads: 8
+  dim_ff: 1024
+  dropout: 0.1
+
+  # DDPM schedule.
+  diffusion_steps: 1000
+  noise_schedule: cosine             # cosine | linear
+  cosine_s: 0.008                    # Nichol & Dhariwal 2021, §3
+
+  # Prediction mode — x̂ matches EDGE (model/diffusion.py:80).
+  predict_x0: true
+
+  # Posterior variance choice. EDGE uses β̃_t (the DDPM lower bound).
+  posterior_variance: beta_tilde     # beta | beta_tilde
+
+  # Classifier-free guidance.
+  cf_drop_prob: 0.25
+  guidance_weight_default: 2.0       # w in EDGE; their headline value
+
+  # Conditioning vector layout.
+  cond_action_embedding_dim: 128
+  cond_summary_dim: 256
+
+  # Loss weights — EXACT EDGE values (model/diffusion.py:514-519, verified).
+  # These were 1.0 in the previous codebase iteration and are now corrected.
+  lambda_simple:  0.636
+  lambda_pos:     0.646              # FK position loss (Eq. 3)
+  lambda_vel:     2.964              # velocity in token space (Eq. 4)
+  lambda_contact: 10.942             # Contact Consistency Loss (Eq. 5)
+
+  # P2 SNR-based loss weighting (EDGE lines 125-130).
+  # Applied to L_simple / L_vel / L_pos but NOT L_contact, matching EDGE.
+  p2_loss_weighting: true
+  p2_loss_weight_k: 1.0
+  p2_loss_weight_gamma: 0.5
+
+  # Foot-contact derivation threshold for token construction.
+  contact_velocity_threshold: 0.05
+
+  # High-score filter for training data — "what a good execution looks like".
+  high_score_quartile: 0.75
+
+  # Long-form chaining (rarely hit on diving clips).
+  overlap_seconds: 2.5
+  overlap_frames: 75
+
+  # Memory vs speed.
+  grad_checkpoint: true              # 24 GB VRAM on 3090
+
+# =============================================================================
+# cf  (counterfactual search)
+# =============================================================================
+cf:
+  # Half-point unit definition.
+  uplift_target: 0.5                 # one half-point
+  uplift_tolerance: 0.10             # accept [0.40, 0.60] as one half-point
+  uplift_max: 0.75                   # reject overshoots — atoms only
+
+  # Intervention modalities the search enumerates.
+  intervention_modalities: [joint_subset, phase_window, transition_timestamp]
+  num_joint_groups: 8
+
+  # Fault gating by dive type. When true (default), the half-point search
+  # never tags an intervention with a fault that cannot structurally occur
+  # on this dive (e.g. late_twist on a no-twist dive). See FAULT_APPLICABILITY
+  # in src/attribution.py.
+  enforce_fault_dive_gating: true
+
+  # Search budget.
+  search_max_candidates: 32          # (phase × joint-group) combinations
+  search_inpaint_steps: 50           # DDIM steps for guided sampling
+  search_guidance_weight: 3.0
+  score_grad_scale: 1.0              # weight on AQA-score gradient term
+
+  # DiME late-start. τ=1.0 means pure-noise init (standard DDPM). With
+  # τ<1.0 the inpaint loop starts from q(z_τT | x_known), producing
+  # tighter, more conservative CFs.
+  noise_level_tau: 1.0
+
+  # DiME explicit 1/√ᾱ_t scaling on the score gradient. Only meaningful
+  # when use_score_guidance=True. Decouples the chain rule from the
+  # network's implicit Jacobian; more stable across τ sweeps.
+  dime_gradient_scaling: false
+
+  # Iterative guidance ramp. If the initial CFG weight yields no valid
+  # CF, retry with the next weight in this list. Single-element list
+  # reproduces the previous one-shot behaviour.
+  iterative_guidance_weights: [3.0, 5.0, 8.0]
+
+  # RePaint resampling (Lugmayr CVPR 2022, Algorithm 1). R=0 means
+  # single-pass (EDGE behaviour). R>0 does R inner iterations over the
+  # last `inpaint_resample_fraction` of denoising steps.
+  inpaint_resamples: 0
+  inpaint_resample_fraction: 0.2     # last 20% of steps
+
+  # Decomposition.
+  max_peeled_half_points: 12         # 6-point gap upper bound
+  residual_threshold: 0.25
+
+  # Physical foot contact (PFC) for the realism column.
+  pfc_metric: edge                   # edge | lateral_accel | both
+  pfc_threshold: 2.0
+  discriminator_threshold: 0.5
+
+# =============================================================================
+# eval  (evaluation pipeline)
+# =============================================================================
+eval:
+  # Bootstrap CI samples.
+  spearman_bootstrap: 1000
+
+  # R-ℓ2 normalisation choice.
+  r_l2_score_normaliser: dataset     # dataset | per_action_type
+
+  # CF-XAI vocabulary (Verma et al. ACM CSUR 2024). Realism = PFC under
+  # this variant. "edge" is the recommended headline; "lateral_accel"
+  # is the legacy variant.
+  pfc_primary_for_acceptance: edge   # edge | lateral_accel
+
+  # Counterfactual quality.
+  cf_faithfulness_tol: 0.10
+  cf_minimality_metric: pose_l2      # pose_l2 | joint_arc_length
+
+  # Top-K attribution evaluation. The codebase reports both top_k_per_dive
+  # (headline) and top_k_union (legacy). Defaults are conservative —
+  # extend to (1, 3, 5) to populate a F1@5 column in tab_3.
+  attribution_topk: [1, 3]
+
+  # Apply the FAULT_APPLICABILITY gating at evaluation time. Ensures
+  # per-fault P/R/F1 has a fair denominator (dives where a fault cannot
+  # structurally occur are excluded from that fault's denominator).
+  attribution_apply_dive_gating: true
+
+  # Expert preference study.
+  expert_study_raters_per_dive: 5
+  expert_study_dives_per_rater: 50
+  expert_study_likert_max: 4
+  expert_study_seed: 0
+
+
+# =============================================================================
+# train  (DDP training)
+# =============================================================================
+train:
+  seed: 0
+  amp_dtype: bf16                    # fp16 | bf16 | fp32 — 3090 supports bf16
+  ddp_backend: nccl
+  find_unused_parameters: false
+  log_every_n_steps: 50
+  val_every_n_epochs: 5
+  keep_top_k_checkpoints: 3
+
+  # AQA training.
+  aqa_optimizer: adam
+  aqa_lr_backbone: 1.0e-4            # I3D (low)
+  aqa_lr_head:     1.0e-3            # TSA head (high)
+  aqa_weight_decay: 0.0
+  aqa_epochs: 200                    # FineDiving reference YAML: max_epoch=200
+  aqa_batch_size_per_gpu: 4          # 16 across 4× 3090
+
+  # Diffusion training.
+  diffusion_optimizer: adamw
+  diffusion_lr: 4.0e-4
+  diffusion_weight_decay: 0.02
+  diffusion_warmup_steps: 1000
+  diffusion_grad_clip: 1.0
+  diffusion_epochs: 2000
+  diffusion_batch_size_per_gpu: 128  # 512 across 4× 3090
+
+  # EMA decay — EXACT EDGE value (model/diffusion.py:63, verified).
+  # Previous codebase iteration had 0.999; corrected to 0.9999.
+  diffusion_ema_decay: 0.9999
+
+  # DDP.
+  nproc_per_node: 4
