@@ -294,50 +294,9 @@ We've tried hard to make the runs reproducible:
 - The CF search uses non-colliding per-peel seeds: `base_seed + peel_index * max(1000, len(iterative_guidance_weights)+1)`, so iterative retries within a peel don't conflict with later peels' seeds. The cache records the exact knobs that produced each CF (the four `*_used` fields), making each record independently reproducible.
 
 Outputs that involve floating-point reductions across GPUs (DDP all-gather + bf16) may differ in the last few decimal places between runs. This is fundamental to the hardware and not under our control; the differences are below all reported CIs.
-
----
-
-## Citing
-
-If you use this codebase, please cite:
-
-```bibtex
-@article{halfpoint2026,
-  title   = {What Cost Half a Point? Counterfactual Action Quality Assessment for Competitive Diving},
-  author  = {<authors>},
-  journal = {Image and Vision Computing},
-  year    = {2026},
-}
-```
-
-And the upstream works the code builds on:
-
-- Xu et al., *FineDiving: A Fine-grained Dataset for Procedure-aware Action Quality Assessment*, CVPR 2022.
-- Xu et al., *Likert Scoring with Grade Decoupling for Long-term Action Assessment* (STSA), IJCV 2024.
-- Tseng et al., *EDGE: Editable Dance Generation from Music*, CVPR 2023.
-- Wang et al., *TSA-Net: Tube Self-Attention Network for Action Quality Assessment*, CVPR 2021.
-- Lugmayr et al., *RePaint: Inpainting using Denoising Diffusion Probabilistic Models*, CVPR 2022.
-- Jeanneret et al., *Diffusion Models for Counterfactual Explanations* (DiME), CVPR 2022.
-- Choi et al., *Perception Prioritized Training of Diffusion Models* (P2), ICML 2022.
-- Verma et al., *Counterfactual Explanations and Algorithmic Recourses for ML: A Review*, ACM CSUR 2024.
-- Loper et al., *SMPL: A Skinned Multi-Person Linear Model*, ACM TOG 2015.
-
 ---
 
 ## License
 
 MIT — see `LICENSE`. The FineDiving and FineDiving+ datasets, SMPL model files, and I3D pretrained weights are governed by their respective licenses; this code does not include or redistribute any of them.
 
----
-
-## Known limitations
-
-A few things we explicitly *don't* claim:
-
-- **No SMPL rendering pipeline.** Figure 5 in the paper uses externally-rendered SMPL meshes overlaid manually onto matplotlib skeletons; this codebase produces the metadata cards but not the renders. Bring your own renderer (pyrender, PyTorch3D, Blender) for the mesh visualisations.
-- **The pose-AQA proxy is approximate.** It distils the AQA's outputs but cannot perfectly mimic them (the AQA sees pixels, the proxy sees poses). Faithfulness numbers in Table 2 reflect this gap; closing it further is open work.
-- **FineDiving+ baseline numbers are TODO-flagged.** `experiments.py:BASELINE_NUMBERS_FINEDIVING_PLUS` carries the values inherited from a prior code revision; the camera-ready code marks them with explicit `citation: "TODO: verify in IJCV 2024 Table 5"` strings. Verify against the IJCV 2024 paper's Table 5 (or the appropriate FineDiving+ table) and update before submission. The FineDiving baselines (`BASELINE_NUMBERS_FINEDIVING`) are verified against IJCV 2024 Table 2 and are correct.
-- **FineDiving annotation pkl schema.** `src/data.load_finediving_annotations` assumes the field names from the original release. If the upstream changes them, the loader raises `KeyError` with the missing field name — patch `data.py` to match.
-- **Procedure segmentation supervision.** We use the 2-transition labels from FineDiving (3 sub-actions per dive). Dives with non-standard procedure counts are filtered at load time; check `data.setup()` logs for the count.
-
-Open issues and pull requests welcome.
